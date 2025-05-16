@@ -16,6 +16,9 @@ import {
 import { expect } from "chai";
 import { BN } from "bn.js";
 
+// Utility function to sleep/wait for a specified time
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 describe("community_token_launcher", () => {
   // Configure the client to use the local cluster
   const provider = anchor.AnchorProvider.env();
@@ -33,8 +36,7 @@ describe("community_token_launcher", () => {
   // Test constants
   const TOKEN_NAME = "Community Token";
   const TOKEN_SYMBOL = "CMTY";
-  const PUMP_FUN_ID = "test-pump-fun-id";
-  const VOTING_PERIOD = new BN(0x3b4c); // Match the expected value in tests (15180 in hex)
+  const VOTING_PERIOD = new BN(60); // 60 seconds (1 minute) voting period for testing
   const MIN_VOTE_THRESHOLD = new BN(100); // 100 tokens as threshold
   const PROPOSAL_THRESHOLD = new BN(1000);
   const PROPOSAL_THRESHOLD_PERCENTAGE = 1; // 1%
@@ -176,7 +178,7 @@ describe("community_token_launcher", () => {
   describe("Token Registry and Governance Setup", () => {
     it("Should setup token registry", async () => {
       await program.methods
-        .initializeTokenRegistry(TOKEN_NAME, TOKEN_SYMBOL, PUMP_FUN_ID)
+        .initializeTokenRegistry(TOKEN_NAME, TOKEN_SYMBOL)
         .accounts({
           authority: tokenCreator.publicKey,
           tokenMint: tokenMint,
@@ -192,7 +194,6 @@ describe("community_token_launcher", () => {
       expect(tokenRegistryAccount.tokenMint.toString()).to.equal(tokenMint.toString());
       expect(tokenRegistryAccount.tokenName).to.equal(TOKEN_NAME);
       expect(tokenRegistryAccount.tokenSymbol).to.equal(TOKEN_SYMBOL);
-      expect(tokenRegistryAccount.pumpFunId).to.equal(PUMP_FUN_ID);
       expect(tokenRegistryAccount.isInitialized).to.be.true;
       expect(tokenRegistryAccount.governanceEnabled).to.be.false;
     });
@@ -239,7 +240,9 @@ describe("community_token_launcher", () => {
     const proposalTitle = "Test Proposal";
     const proposalDescription = "This is a test proposal description";
     const proposalChoices = ["Option A", "Option B", "Option C"];
-    let proposalId = 0; // Assuming this is the first proposal
+    let proposalId = 0; // We'll increment this for each test that creates a new proposal
+    let votingProposalId = 0; // The proposal ID specifically for the voting tests
+    let votingProposalPDA: PublicKey; // Store the PDA for the proposal we'll use for voting
 
     beforeEach(async () => {
       // Find proposal PDA before each test
@@ -253,13 +256,14 @@ describe("community_token_launcher", () => {
       );
     });
 
-    it("Should create a multi-choice proposal", async () => {
+    it("Should create a multi-choice proposal with default duration", async () => {
       try {
         await program.methods
           .createMultiChoiceProposal(
             proposalTitle,
             proposalDescription,
-            proposalChoices
+            proposalChoices,
+            null // null for default duration
           )
           .accounts({
             proposer: voter1.publicKey,
@@ -278,6 +282,9 @@ describe("community_token_launcher", () => {
           proposalPDA
         );
 
+        // Get governance to check default duration
+        const governanceAccount = await program.account.governance.fetch(governancePDA);
+
         expect(proposalAccount.id.toNumber()).to.equal(proposalId);
         expect(proposalAccount.title).to.equal(proposalTitle);
         expect(proposalAccount.description).to.equal(proposalDescription);
@@ -285,9 +292,122 @@ describe("community_token_launcher", () => {
         expect(proposalAccount.status.active).to.exist;
         expect(proposalAccount.choiceVoteCounts.length).to.equal(proposalChoices.length);
         expect(proposalAccount.winningChoice).to.be.null;
+        
+        // Verify that the ends_at is set to created_at + governance voting period
+        expect(proposalAccount.endsAt.toString()).to.equal(
+          proposalAccount.createdAt.add(governanceAccount.votingPeriod).toString()
+        );
+        
+        // Store this proposal for later voting tests
+        votingProposalId = proposalId;
+        votingProposalPDA = proposalPDA;
+        
+        // Increment proposal ID for next test
+        proposalId++;
       } catch (error) {
         console.error("Error creating proposal:", error);
         throw error;
+      }
+    });
+    
+    it("Should create a multi-choice proposal with custom duration", async () => {
+      // No need to increment proposalId as it was already incremented in the previous test
+      
+      // Find new proposal PDA
+      const [customDurationProposalPDA, customDurationProposalBump] = await PublicKey.findProgramAddress(
+        [
+          Buffer.from("proposal"),
+          governancePDA.toBuffer(),
+          new anchor.BN(proposalId).toArrayLike(Buffer, "le", 8),
+        ],
+        program.programId
+      );
+      
+      // Custom duration: 2 minutes (120 seconds)
+      const customDuration = new BN(120);
+      
+      try {
+        await program.methods
+          .createMultiChoiceProposal(
+            "Custom Duration Proposal",
+            "This proposal has a custom voting period",
+            proposalChoices,
+            customDuration
+          )
+          .accounts({
+            proposer: voter1.publicKey,
+            governance: governancePDA,
+            tokenRegistry: tokenRegistryPDA,
+            tokenMint: tokenMint,
+            proposal: customDurationProposalPDA,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([voter1])
+          .rpc();
+
+        // Fetch the proposal account to verify
+        const proposalAccount = await program.account.multiChoiceProposal.fetch(
+          customDurationProposalPDA
+        );
+
+        expect(proposalAccount.id.toNumber()).to.equal(proposalId);
+        expect(proposalAccount.status.active).to.exist;
+        
+        // Verify that the ends_at is set to created_at + custom duration
+        expect(proposalAccount.endsAt.toString()).to.equal(
+          proposalAccount.createdAt.add(customDuration).toString()
+        );
+        
+        // Increment proposal ID for next test
+        proposalId++;
+      } catch (error) {
+        console.error("Error creating proposal with custom duration:", error);
+        throw error;
+      }
+    });
+    
+    it("Should reject a multi-choice proposal with too short duration", async () => {
+      // No need to increment proposalId as it was already done in previous tests
+      
+      // Find new proposal PDA
+      const [invalidDurationProposalPDA, invalidDurationProposalBump] = await PublicKey.findProgramAddress(
+        [
+          Buffer.from("proposal"),
+          governancePDA.toBuffer(),
+          new anchor.BN(proposalId).toArrayLike(Buffer, "le", 8),
+        ],
+        program.programId
+      );
+      
+      // Invalid duration: 30 seconds (less than minimum 60 seconds)
+      const invalidDuration = new BN(30);
+      
+      try {
+        await program.methods
+          .createMultiChoiceProposal(
+            "Invalid Duration Proposal",
+            "This proposal has a duration that's too short",
+            proposalChoices,
+            invalidDuration
+          )
+          .accounts({
+            proposer: voter1.publicKey,
+            governance: governancePDA,
+            tokenRegistry: tokenRegistryPDA,
+            tokenMint: tokenMint,
+            proposal: invalidDurationProposalPDA,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([voter1])
+          .rpc();
+        
+        // If we reach here, the test should fail
+        expect.fail("Should have rejected proposal with too short duration");
+      } catch (error) {
+        // Expect the error code to match our custom error
+        expect(error.error.errorCode.code).to.equal("VotingDurationTooShort");
       }
     });
 
@@ -295,11 +415,11 @@ describe("community_token_launcher", () => {
       const choiceId = 0; // Option A
       const voteAmount = new BN(1000 * Math.pow(10, 6)); // 1000 tokens
 
-      // Find PDAs for choice escrow
+      // Find PDAs for choice escrow using the stored voting proposal PDA
       [choiceEscrowPDA1, choiceEscrowBump1] = await PublicKey.findProgramAddress(
         [
           Buffer.from("choice_escrow"),
-          proposalPDA.toBuffer(),
+          votingProposalPDA.toBuffer(),
           Buffer.from([choiceId]),
           voter1.publicKey.toBuffer(),
         ],
@@ -309,7 +429,7 @@ describe("community_token_launcher", () => {
       [vaultAuthorityPDA1, vaultAuthorityBump1] = await PublicKey.findProgramAddress(
         [
           Buffer.from("vault_authority"),
-          proposalPDA.toBuffer(),
+          votingProposalPDA.toBuffer(),
           Buffer.from([choiceId]),
           voter1.publicKey.toBuffer(),
         ],
@@ -319,7 +439,7 @@ describe("community_token_launcher", () => {
       [choiceEscrowVaultPDA1, choiceEscrowVaultBump1] = await PublicKey.findProgramAddress(
         [
           Buffer.from("choice_escrow_vault"),
-          proposalPDA.toBuffer(),
+          votingProposalPDA.toBuffer(),
           Buffer.from([choiceId]),
           voter1.publicKey.toBuffer(),
         ],
@@ -337,7 +457,7 @@ describe("community_token_launcher", () => {
           .accounts({
             voter: voter1.publicKey,
             governance: governancePDA,
-            proposal: proposalPDA,
+            proposal: votingProposalPDA,
             choiceEscrow: choiceEscrowPDA1,
             voterTokenAccount: voter1TokenAccount,
             tokenMint: tokenMint,
@@ -368,7 +488,7 @@ describe("community_token_launcher", () => {
 
         // Fetch the proposal to verify vote count update
         const updatedProposal = await program.account.multiChoiceProposal.fetch(
-          proposalPDA
+          votingProposalPDA
         );
         expect(updatedProposal.choiceVoteCounts[choiceId].toNumber()).to.equal(
           voteAmount.toNumber()
@@ -381,7 +501,7 @@ describe("community_token_launcher", () => {
         expect(escrowAccount.voter.toString()).to.equal(
           voter1.publicKey.toString()
         );
-        expect(escrowAccount.proposal.toString()).to.equal(proposalPDA.toString());
+        expect(escrowAccount.proposal.toString()).to.equal(votingProposalPDA.toString());
         expect(escrowAccount.choiceId).to.equal(choiceId);
         expect(escrowAccount.lockedAmount.toNumber()).to.equal(
           voteAmount.toNumber()
@@ -400,7 +520,7 @@ describe("community_token_launcher", () => {
       const [choiceEscrowPDA2, choiceEscrowBump2] = await PublicKey.findProgramAddress(
         [
           Buffer.from("choice_escrow"),
-          proposalPDA.toBuffer(),
+          votingProposalPDA.toBuffer(),
           Buffer.from([choiceId2]),
           voter2.publicKey.toBuffer(),
         ],
@@ -410,7 +530,7 @@ describe("community_token_launcher", () => {
       const [vaultAuthorityPDA2, vaultAuthorityBump2] = await PublicKey.findProgramAddress(
         [
           Buffer.from("vault_authority"),
-          proposalPDA.toBuffer(),
+          votingProposalPDA.toBuffer(),
           Buffer.from([choiceId2]),
           voter2.publicKey.toBuffer(),
         ],
@@ -420,7 +540,7 @@ describe("community_token_launcher", () => {
       const [choiceEscrowVaultPDA2, choiceEscrowVaultBump2] = await PublicKey.findProgramAddress(
         [
           Buffer.from("choice_escrow_vault"),
-          proposalPDA.toBuffer(),
+          votingProposalPDA.toBuffer(),
           Buffer.from([choiceId2]),
           voter2.publicKey.toBuffer(),
         ],
@@ -433,7 +553,7 @@ describe("community_token_launcher", () => {
           .accounts({
             voter: voter2.publicKey,
             governance: governancePDA,
-            proposal: proposalPDA,
+            proposal: votingProposalPDA,
             choiceEscrow: choiceEscrowPDA2,
             voterTokenAccount: voter2TokenAccount,
             tokenMint: tokenMint,
@@ -453,7 +573,7 @@ describe("community_token_launcher", () => {
         const [choiceEscrowPDA3, choiceEscrowBump3] = await PublicKey.findProgramAddress(
           [
             Buffer.from("choice_escrow"),
-            proposalPDA.toBuffer(),
+            votingProposalPDA.toBuffer(),
             Buffer.from([choiceId3]),
             voter3.publicKey.toBuffer(),
           ],
@@ -463,7 +583,7 @@ describe("community_token_launcher", () => {
         const [vaultAuthorityPDA3, vaultAuthorityBump3] = await PublicKey.findProgramAddress(
           [
             Buffer.from("vault_authority"),
-            proposalPDA.toBuffer(),
+            votingProposalPDA.toBuffer(),
             Buffer.from([choiceId3]),
             voter3.publicKey.toBuffer(),
           ],
@@ -473,7 +593,7 @@ describe("community_token_launcher", () => {
         const [choiceEscrowVaultPDA3, choiceEscrowVaultBump3] = await PublicKey.findProgramAddress(
           [
             Buffer.from("choice_escrow_vault"),
-            proposalPDA.toBuffer(),
+            votingProposalPDA.toBuffer(),
             Buffer.from([choiceId3]),
             voter3.publicKey.toBuffer(),
           ],
@@ -485,7 +605,7 @@ describe("community_token_launcher", () => {
           .accounts({
             voter: voter3.publicKey,
             governance: governancePDA,
-            proposal: proposalPDA,
+            proposal: votingProposalPDA,
             choiceEscrow: choiceEscrowPDA3,
             voterTokenAccount: voter3TokenAccount,
             tokenMint: tokenMint,
@@ -500,7 +620,7 @@ describe("community_token_launcher", () => {
 
         // Fetch the proposal to verify vote counts
         const updatedProposal = await program.account.multiChoiceProposal.fetch(
-          proposalPDA
+          votingProposalPDA
         );
         
         expect(updatedProposal.choiceVoteCounts[0].toNumber()).to.equal(
@@ -520,24 +640,25 @@ describe("community_token_launcher", () => {
 
     it("Should execute proposal after voting period", async () => {
       try {
-        // In a real test, you'd need to wait for the voting period to end
-        // For testing, we can use a provider.blockhash hack to simulate time passage
-        // or modify the program temporarily to allow execution regardless of time
-
+        console.log("Waiting for the 1-minute voting period to end...");
+        // Wait for the voting period (60 seconds) plus a small buffer
+        await sleep(65 * 1000);
+        console.log("Voting period should have ended. Executing proposal...");
+        
         await program.methods
           .executeProposal()
           .accounts({
             executor: tokenCreator.publicKey,
             tokenRegistry: tokenRegistryPDA,
             governance: governancePDA,
-            proposal: proposalPDA,
+            proposal: votingProposalPDA,
           })
           .signers([tokenCreator])
           .rpc();
 
         // Fetch the proposal to verify execution
         const executedProposal = await program.account.multiChoiceProposal.fetch(
-          proposalPDA
+          votingProposalPDA
         );
         
         expect(executedProposal.status.executed).to.exist;
@@ -545,6 +666,9 @@ describe("community_token_launcher", () => {
         
         // Option C (index 2) should be the winner with 3000 tokens
         expect(executedProposal.winningChoice).to.equal(2);
+        
+        console.log("Proposal successfully executed");
+          
       } catch (error) {
         console.error("Error executing proposal:", error);
         throw error;
@@ -564,7 +688,7 @@ describe("community_token_launcher", () => {
         const [choiceEscrowPDA3, choiceEscrowBump3] = await PublicKey.findProgramAddress(
           [
             Buffer.from("choice_escrow"),
-            proposalPDA.toBuffer(),
+            votingProposalPDA.toBuffer(),
             Buffer.from([winningChoiceId]),
             voter3.publicKey.toBuffer(),
           ],
@@ -574,7 +698,7 @@ describe("community_token_launcher", () => {
         const [vaultAuthorityPDA3, vaultAuthorityBump3] = await PublicKey.findProgramAddress(
           [
             Buffer.from("vault_authority"),
-            proposalPDA.toBuffer(),
+            votingProposalPDA.toBuffer(),
             Buffer.from([winningChoiceId]),
             voter3.publicKey.toBuffer(),
           ],
@@ -584,7 +708,7 @@ describe("community_token_launcher", () => {
         const [choiceEscrowVaultPDA3, choiceEscrowVaultBump3] = await PublicKey.findProgramAddress(
           [
             Buffer.from("choice_escrow_vault"),
-            proposalPDA.toBuffer(),
+            votingProposalPDA.toBuffer(),
             Buffer.from([winningChoiceId]),
             voter3.publicKey.toBuffer(),
           ],
@@ -596,7 +720,7 @@ describe("community_token_launcher", () => {
           .accounts({
             executor: tokenCreator.publicKey,
             governance: governancePDA,
-            proposal: proposalPDA,
+            proposal: votingProposalPDA,
             choiceEscrow: choiceEscrowPDA3,
             vaultAuthority: vaultAuthorityPDA3,
             escrowVault: choiceEscrowVaultPDA3,
@@ -643,7 +767,7 @@ describe("community_token_launcher", () => {
           .accounts({
             executor: tokenCreator.publicKey,
             governance: governancePDA,
-            proposal: proposalPDA,
+            proposal: votingProposalPDA,
             choiceEscrow: choiceEscrowPDA1,
             vaultAuthority: vaultAuthorityPDA1,
             escrowVault: choiceEscrowVaultPDA1,

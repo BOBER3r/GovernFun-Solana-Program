@@ -13,7 +13,6 @@ pub mod community_token_launcher {
         ctx: Context<InitializeTokenRegistry>,
         token_name: String,
         token_symbol: String,
-        pump_fun_id: String,
     ) -> Result<()> {
         let token_registry = &mut ctx.accounts.token_registry;
         
@@ -23,7 +22,6 @@ pub mod community_token_launcher {
         token_registry.token_name = token_name.clone();
         token_registry.token_symbol = token_symbol;
         token_registry.launch_timestamp = Clock::get()?.unix_timestamp;
-        token_registry.pump_fun_id = pump_fun_id;
         token_registry.governance_enabled = false;
         token_registry.is_initialized = true;
         
@@ -101,6 +99,7 @@ pub mod community_token_launcher {
         title: String,
         description: String,
         choices: Vec<String>,
+        voting_duration: Option<i64>,
     ) -> Result<()> {
         let proposal = &mut ctx.accounts.proposal;
         let proposer = &ctx.accounts.proposer;
@@ -127,7 +126,18 @@ pub mod community_token_launcher {
         proposal.choice_vote_counts = vec![0; choices_len];
         proposal.status = ProposalStatus::Active;
         proposal.created_at = Clock::get()?.unix_timestamp;
-        proposal.ends_at = proposal.created_at + ctx.accounts.governance.voting_period;
+        
+        // Use custom voting duration if provided and valid, otherwise use the governance default
+        let duration = match voting_duration {
+            Some(duration) => {
+                // Require minimum of 60 seconds (1 minute)
+                require!(duration >= 60, ErrorCode::VotingDurationTooShort);
+                duration
+            },
+            None => ctx.accounts.governance.voting_period,
+        };
+        
+        proposal.ends_at = proposal.created_at + duration;
         proposal.winning_choice = None;
 
         msg!("Multi-choice proposal created: {} (ID: {})", title, proposal_id);
@@ -144,13 +154,10 @@ pub mod community_token_launcher {
             ctx.accounts.executor.key() == token_registry.authority,
             ErrorCode::Unauthorized
         );
-
-        //TODO: Turn on time check
-        // We'll skip the time check for testing purposes
-        // This would normally check if the voting period has ended
-        // Check if proposal has ended
-        // let current_time = Clock::get()?.unix_timestamp;
-        // require!(current_time > proposal.ends_at, ErrorCode::VotingNotEnded);
+        
+        // Comment out time check for testing
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(current_time > proposal.ends_at, ErrorCode::VotingNotEnded);
 
         // Check if proposal is still active status
         require!(proposal.status == ProposalStatus::Active, ErrorCode::ProposalNotActive);
@@ -297,7 +304,6 @@ pub struct TokenRegistry {
     pub token_name: String,
     pub token_symbol: String,
     pub launch_timestamp: i64,
-    pub pump_fun_id: String,
     pub governance_enabled: bool,
     pub is_initialized: bool,
 }
@@ -311,8 +317,6 @@ impl TokenRegistry {
         + 4    // token_symbol length prefix
         + 8    // token_symbol data
         + 8    // launch_timestamp
-        + 4    // pump_fun_id length prefix
-        + 36   // pump_fun_id data
         + 1    // governance_enabled
         + 1;   // is_initialized
 }
@@ -480,6 +484,7 @@ pub struct LockTokensForChoice<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(title: String, description: String, choices: Vec<String>, voting_duration: Option<i64>)]
 pub struct CreateMultiChoiceProposal<'info> {
     #[account(mut)]
     pub proposer: Signer<'info>,
@@ -560,6 +565,8 @@ pub struct DistributeWinningEscrow<'info> {
     pub governance: Account<'info, Governance>,
 
     #[account(
+        seeds = [b"proposal", governance.key().as_ref(), &proposal.id.to_le_bytes()],
+        bump,
         constraint = proposal.governance == governance.key(),
         constraint = proposal.status == ProposalStatus::Executed
     )]
@@ -673,6 +680,8 @@ pub struct RefundLosingEscrow<'info> {
     pub governance: Account<'info, Governance>,
 
     #[account(
+        seeds = [b"proposal", governance.key().as_ref(), &proposal.id.to_le_bytes()],
+        bump,
         constraint = proposal.governance == governance.key(),
         constraint = proposal.status == ProposalStatus::Executed
     )]
@@ -748,4 +757,6 @@ pub enum ErrorCode {
     NotWinningEscrow,
     #[msg("Cannot refund the winning escrow")]
     IsWinningEscrow,
+    #[msg("Voting duration must be at least 60 seconds (1 minute)")]
+    VotingDurationTooShort,
 }
