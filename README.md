@@ -1,51 +1,55 @@
 # Community Token Launcher
 
-A Solana program for launching community tokens with governance capabilities.
+A powerful Solana program that enables communities to launch tokens with comprehensive governance capabilities.
 
-## Overview
+## 🌟 Features
 
-This program allows communities to:
-- Create and manage token-based governance structures
-- Create multi-choice proposals
-- Vote on proposals with token-based voting power
-- Execute winning proposals
-- Distribute tokens to winners or refund tokens to losers
+- **Token Creation**: Launch your own community token with custom name and symbol
+- **Governance System**: Establish a decentralized governance structure
+- **Proposal Management**: Create multi-choice proposals for community decisions
+- **Token-Based Voting**: Vote on proposals with tokens to determine outcomes
+- **Token Economics**: Winning choices receive tokens, while losing voters get refunds
+- **Secure Design**: All operations secured through program-derived accounts (PDAs)
 
-## Development
+## 🚧 Coming Soon
+
+- **Staking Module**: Token staking capabilities currently under development
+- **Gated Content**: Access control for community resources based on token holdings
+- **More Governance Features**: Enhanced proposal types and execution mechanisms
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Node.js and npm/yarn
-- Rust and Cargo
-- Solana CLI tools
-- Anchor framework
+- [Solana CLI Tools](https://docs.solana.com/cli/install-solana-cli-tools)
+- [Anchor Framework](https://www.anchor-lang.com/docs/installation)
+- [Node.js](https://nodejs.org/) (v16 or later)
+- [Rust](https://www.rust-lang.org/tools/install) and Cargo
 
-### Setup
+### Installation
 
-1. Install dependencies:
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/community_token_launcher.git
+cd community_token_launcher
+```
+
+2. Install dependencies:
 ```bash
 yarn install
 ```
 
-2. Build the program:
+3. Build the program:
 ```bash
 yarn build
 ```
 
 ### Testing
 
-Run the automated tests:
+Run the test suite to verify all program functionality:
 ```bash
 yarn test
 ```
-
-This will execute the tests in the `tests/` directory, validating all program functionality:
-
-- Creating multi-choice proposals
-- Voting on proposals by locking tokens
-- Executing proposals after voting period ends
-- Distributing tokens to winners
-- Refunding tokens to losers
 
 ### Deployment
 
@@ -54,26 +58,99 @@ Deploy to a Solana cluster:
 yarn deploy
 ```
 
-## Program Structure
+## 📚 Usage
 
-### Main Instructions
+### Creating a Community Token
 
-- `create_multi_choice_proposal`: Create a new proposal with multiple choices
-- `lock_tokens_for_choice`: Vote for a specific choice by locking tokens
-- `execute_proposal`: Process the proposal after voting ends
-- `distribute_winning_escrow`: Transfer tokens from winning choice escrows to the token creator
-- `refund_losing_escrow`: Return tokens from losing choice escrows to the voters
+```typescript
+// Initialize a new token registry
+const tx = await program.methods
+  .initializeTokenRegistry("My Community Token", "MCT")
+  .accounts({
+    authority: wallet.publicKey,
+    tokenMint: mintAddress,
+    tokenRegistry: tokenRegistryPda,
+    systemProgram: anchor.web3.SystemProgram.programId,
+  })
+  .rpc();
+```
 
-### Key Accounts
+### Setting Up Governance
 
-- `TokenRegistry`: Stores token metadata and authority
-- `Governance`: Controls the governance parameters
-- `MultiChoiceProposal`: Contains proposal details and voting results
-- `ChoiceEscrow`: Tracks token locks for specific choices
+```typescript
+// Initialize governance for your token
+const tx = await program.methods
+  .initializeGovernance(
+    86400, // voting period in seconds (24 hours)
+    1000000000, // minimum vote threshold
+    100000000, // proposal threshold
+    5, // proposal threshold percentage
+    "Main Governance"
+  )
+  .accounts({
+    authority: wallet.publicKey,
+    tokenMint: mintAddress,
+    tokenRegistry: tokenRegistryPda,
+    governance: governancePda,
+    systemProgram: anchor.web3.SystemProgram.programId,
+  })
+  .rpc();
+```
 
-## Security Considerations
+### Creating and Voting on Proposals
 
-- All token transfers are secured through PDAs
-- Account validation ensures proper access control
-- Timestamp checks prevent early proposal execution
-- Choice validation prevents invalid votes
+```typescript
+// Create a proposal
+const tx = await program.methods
+  .createMultiChoiceProposal(
+    "Community Fund Allocation",
+    "How should we allocate the community fund?",
+    ["Project A", "Project B", "Save for later"],
+    null // Use default voting period
+  )
+  .accounts({
+    proposer: wallet.publicKey,
+    governance: governancePda,
+    tokenRegistry: tokenRegistryPda,
+    tokenMint: mintAddress,
+    proposal: proposalPda,
+    systemProgram: anchor.web3.SystemProgram.programId,
+  })
+  .rpc();
+
+// Vote on a proposal
+const tx = await program.methods
+  .lockTokensForChoice(
+    new anchor.BN(1000000000), // 1 token with 9 decimals
+    1 // Choice index (Project B)
+  )
+  .accounts({
+    voter: wallet.publicKey,
+    governance: governancePda,
+    proposal: proposalPda,
+    choiceEscrow: choiceEscrowPda,
+    voterTokenAccount: voterTokenAccount,
+    tokenMint: mintAddress,
+    vaultAuthority: vaultAuthorityPda,
+    choiceEscrowVault: choiceEscrowVaultPda,
+    tokenProgram: TOKEN_PROGRAM_ID,
+    systemProgram: anchor.web3.SystemProgram.programId,
+    rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+  })
+  .rpc();
+```
+
+## 🔒 Security
+
+- All token operations use PDAs for secure transfers
+- Comprehensive account validation for all instructions
+- Timing checks prevent manipulation of proposals
+- Clear access control for administrative actions
+
+## 📜 License
+
+ISC License
+
+---
+
+Built with [Anchor](https://www.anchor-lang.com/) on [Solana](https://solana.com/)
