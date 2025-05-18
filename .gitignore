@@ -5,3 +5,7 @@ target
 node_modules
 test-ledger
 .yarn
+.claude
+.idea
+new-buffer-keypair.json
+buffer

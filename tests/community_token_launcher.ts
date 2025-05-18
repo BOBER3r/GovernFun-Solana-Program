@@ -6,6 +6,7 @@ import {
   Keypair,
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
+  ComputeBudgetProgram,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -656,7 +657,16 @@ describe("community_token_launcher", () => {
           .signers([tokenCreator])
           .rpc();
 
-        // Fetch the proposal to verify execution
+        // Use the getter function to fetch the proposal and verify execution
+        await program.methods
+          .getProposal(votingProposalId)
+          .accounts({
+            governance: governancePDA,
+            proposal: votingProposalPDA,
+          })
+          .rpc();
+          
+        // Now fetch the proposal data to verify execution
         const executedProposal = await program.account.multiChoiceProposal.fetch(
           votingProposalPDA
         );
@@ -667,10 +677,93 @@ describe("community_token_launcher", () => {
         // Option C (index 2) should be the winner with 3000 tokens
         expect(executedProposal.winningChoice).to.equal(2);
         
+        // Get winning choice using the getter function
+        const winningChoiceId = 2;
+        await program.methods
+          .getChoice(votingProposalId, winningChoiceId)
+          .accounts({
+            governance: governancePDA,
+            proposal: votingProposalPDA,
+          })
+          .rpc();
+        
+        // Verify the choice text
+        expect(executedProposal.choices[winningChoiceId]).to.equal("Option C");
+        
         console.log("Proposal successfully executed");
           
       } catch (error) {
         console.error("Error executing proposal:", error);
+        throw error;
+      }
+    });
+    
+    it("Should get proposal data using new getter function", async () => {
+      try {
+        // Call the new getter function
+        const proposalData = await program.methods
+          .getProposalData(votingProposalId)
+          .accounts({
+            governance: governancePDA,
+            proposal: votingProposalPDA,
+          })
+          .view();
+        
+        // Verify proposal data
+        expect(proposalData.id.toNumber()).to.equal(votingProposalId);
+        expect(proposalData.title).to.equal("Test Proposal");
+        expect(proposalData.description).to.equal("This is a test proposal description");
+        expect(proposalData.choices).to.deep.equal(["Option A", "Option B", "Option C"]);
+        expect(proposalData.status.executed).to.exist;
+        expect(proposalData.winningChoice).to.equal(2);
+        
+        // Verify vote counts
+        expect(proposalData.choiceVoteCounts[0].toNumber()).to.equal(1000 * Math.pow(10, 6));
+        expect(proposalData.choiceVoteCounts[1].toNumber()).to.equal(2000 * Math.pow(10, 6));
+        expect(proposalData.choiceVoteCounts[2].toNumber()).to.equal(3000 * Math.pow(10, 6));
+        
+      } catch (error) {
+        console.error("Error getting proposal data:", error);
+        throw error;
+      }
+    });
+    
+    it("Should get choice data using new getter function", async () => {
+      try {
+        // Call the new getter function for the winning choice
+        const winningChoiceId = 2;
+        const winningChoiceData = await program.methods
+          .getChoiceData(votingProposalId, winningChoiceId)
+          .accounts({
+            governance: governancePDA,
+            proposal: votingProposalPDA,
+          })
+          .view();
+        
+        // Verify choice data
+        expect(winningChoiceData.id).to.equal(winningChoiceId);
+        expect(winningChoiceData.name).to.equal("Option C");
+        expect(winningChoiceData.voteCount.toNumber()).to.equal(3000 * Math.pow(10, 6));
+        expect(winningChoiceData.isWinning).to.be.true;
+        
+        // Now get a losing choice
+        const losingChoiceId = 0;
+        const losingChoiceData = await program.methods
+          .getChoiceData(votingProposalId, losingChoiceId)
+          .accounts({
+            governance: governancePDA,
+            proposal: votingProposalPDA,
+          })
+          .view();
+          
+        // Verify losing choice data
+        expect(losingChoiceData.id).to.equal(losingChoiceId);
+        expect(losingChoiceData.name).to.equal("Option A");
+        expect(losingChoiceData.voteCount.toNumber()).to.equal(1000 * Math.pow(10, 6));
+        expect(losingChoiceData.isWinning).to.be.false;
+        
+      } catch (error) {
+        console.error("Error getting choice data:", error);
         throw error;
       }
     });

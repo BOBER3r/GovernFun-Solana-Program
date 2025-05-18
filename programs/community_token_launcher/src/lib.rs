@@ -29,6 +29,80 @@ pub mod community_token_launcher {
         
         Ok(())
     }
+    
+    pub fn get_proposal(ctx: Context<GetProposal>, proposal_id: u64) -> Result<()> {
+        // The proposal account is already loaded in the context
+        // No need to modify any state, just return success
+        // The client can access the proposal account data
+        msg!("Retrieved proposal: {} (ID: {})", ctx.accounts.proposal.title, proposal_id);
+        Ok(())
+    }
+
+    pub fn get_choice(ctx: Context<GetChoice>, _proposal_id: u64, choice_id: u8) -> Result<()> {
+        // Verify choice id is valid
+        require!(
+            (choice_id as usize) < ctx.accounts.proposal.choices.len(),
+            ErrorCode::InvalidChoiceId
+        );
+        
+        // The proposal account is already loaded in the context
+        // No need to modify any state, just return success
+        // The client can access the proposal account data
+        msg!("Retrieved choice: {} (Choice ID: {})", 
+            ctx.accounts.proposal.choices[choice_id as usize], 
+            choice_id);
+        Ok(())
+    }
+    
+    pub fn get_choice_data(ctx: Context<GetChoice>, _proposal_id: u64, choice_id: u8) -> Result<ChoiceData> {
+        // Verify choice id is valid
+        require!(
+            (choice_id as usize) < ctx.accounts.proposal.choices.len(),
+            ErrorCode::InvalidChoiceId
+        );
+        
+        let proposal = &ctx.accounts.proposal;
+        
+        // Create a new struct with the choice data
+        let choice_data = ChoiceData {
+            id: choice_id,
+            name: proposal.choices[choice_id as usize].clone(),
+            vote_count: proposal.choice_vote_counts[choice_id as usize],
+            is_winning: match proposal.winning_choice {
+                Some(winning_id) => winning_id == choice_id,
+                None => false,
+            },
+        };
+        
+        msg!("Retrieved choice data: {} (ID: {})", choice_data.name, choice_id);
+        
+        // Return the data directly
+        Ok(choice_data)
+    }
+    
+    pub fn get_proposal_data(ctx: Context<GetProposal>, proposal_id: u64) -> Result<ProposalData> {
+        let proposal = &ctx.accounts.proposal;
+        
+        // Create a new struct with the proposal data
+        let proposal_data = ProposalData {
+            id: proposal.id,
+            title: proposal.title.clone(),
+            description: proposal.description.clone(),
+            proposer: proposal.proposer,
+            token_creator: proposal.token_creator,
+            choices: proposal.choices.clone(),
+            choice_vote_counts: proposal.choice_vote_counts.clone(),
+            status: proposal.status.clone(),
+            created_at: proposal.created_at,
+            ends_at: proposal.ends_at,
+            winning_choice: proposal.winning_choice,
+        };
+        
+        msg!("Retrieved proposal data for: {} (ID: {})", proposal.title, proposal_id);
+        
+        // Return the data directly
+        Ok(proposal_data)
+    }
 
     pub fn initialize_governance(
         ctx: Context<InitializeGovernance>,
@@ -731,6 +805,63 @@ pub struct RefundLosingEscrow<'info> {
 
     pub token_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(proposal_id: u64)]
+pub struct GetProposal<'info> {
+    #[account(
+        seeds = [b"governance", governance.token_mint.as_ref()],
+        bump
+    )]
+    pub governance: Account<'info, Governance>,
+
+    #[account(
+        seeds = [b"proposal", governance.key().as_ref(), &proposal_id.to_le_bytes()],
+        bump,
+        constraint = proposal.governance == governance.key()
+    )]
+    pub proposal: Account<'info, MultiChoiceProposal>,
+}
+
+#[derive(Accounts)]
+#[instruction(proposal_id: u64, choice_id: u8)]
+pub struct GetChoice<'info> {
+    #[account(
+        seeds = [b"governance", governance.token_mint.as_ref()],
+        bump
+    )]
+    pub governance: Account<'info, Governance>,
+
+    #[account(
+        seeds = [b"proposal", governance.key().as_ref(), &proposal_id.to_le_bytes()],
+        bump,
+        constraint = proposal.governance == governance.key()
+    )]
+    pub proposal: Account<'info, MultiChoiceProposal>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct ProposalData {
+    pub id: u64,
+    pub title: String,
+    pub description: String,
+    pub proposer: Pubkey,
+    pub token_creator: Pubkey,
+    pub choices: Vec<String>,
+    pub choice_vote_counts: Vec<u64>,
+    pub status: ProposalStatus,
+    pub created_at: i64,
+    pub ends_at: i64,
+    pub winning_choice: Option<u8>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct ChoiceData {
+    pub id: u8,
+    pub name: String,
+    pub vote_count: u64,
+    pub is_winning: bool,
 }
 
 #[error_code]
